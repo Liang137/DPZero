@@ -1,3 +1,6 @@
+# adapted from https://github.com/lxuechen/private-transformers/blob/main/examples/classification/spectral_analysis/geometric_median.py
+# used for paper: Li et al. When does differentially private learning not suffer in high dimensions? NeurIPS, 2022.
+
 import dataclasses
 import argparse
 from tqdm.auto import tqdm
