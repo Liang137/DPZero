@@ -1,3 +1,6 @@
+# borrow the idea from https://github.com/princeton-nlp/MeZO
+# used for paper: Malladi et al. Fine-tuning language models with just forward passes. NeurIPS, 2023
+
 import numpy as np
 
 import torch
