@@ -1,3 +1,6 @@
+# Directly copied from https://github.com/lxuechen/private-transformers/blob/main/private_transformers/transformers_support.py
+# used for paper: Li et al. Large language models can be strong differentially private learners. ICLR, 2022.
+#
 # Copyright (c) Xuechen Li. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
