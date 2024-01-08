@@ -1,6 +1,3 @@
-# borrow the idea from https://github.com/princeton-nlp/MeZO
-# used for paper: Malladi et al. Fine-tuning language models with just forward passes. NeurIPS, 2023
-
 import numpy as np
 
 import torch
@@ -17,13 +14,17 @@ class DPZero():
         self.noise_multiplier = noise_multiplier
         self.clip_scalar = clip_scalar
 
+        if noise_multiplier == 0:
+            self.clip_scalar = False
+
 
     def perturb_model(self, scaling_factor=1):
         torch.manual_seed(self.seed)
 
         for _, param in self.model.named_parameters():
-            u = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
-            param.data = param.data + scaling_factor * u * self.lam
+            if param.requires_grad:
+                u = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
+                param.data = param.data + scaling_factor * u * self.lam
 
 
     @torch.no_grad()
@@ -38,21 +39,27 @@ class DPZero():
         return per_sample_loss.detach()
 
 
+    @torch.no_grad()
     def zo_update(self, finite_diff):
         torch.manual_seed(self.seed)
 
+        # perform per-sample clipping on the finite difference
         if self.clip_scalar:
-            # perform per-sample clipping on the finite-difference term
-            threshold = torch.ones_like(finite_diff) * self.clip
-            mask = finite_diff.abs() > threshold
-            reweight = finite_diff / finite_diff.abs()
-            finite_diff[mask] = reweight[mask] * self.clip
+            mask = finite_diff.abs() > self.clip
+            reweight = torch.sign(finite_diff) * self.clip
+            finite_diff[mask] = reweight[mask]
         
+        # add DP noise to the finite difference
+        if self.noise_multiplier != 0:
+            # numpy use different seeds from torch
+            noise = np.random.normal(loc=0., scale=self.noise_multiplier*self.clip, size=finite_diff.size()).mean()
+        else:
+            noise = 0
+
         for _, param in self.model.named_parameters():
-            u = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
-            # add DP noise to the finite difference
-            noise = np.random.normal(loc=0., scale=self.noise_multiplier*self.clip)
-            param.data = param.data - self.lr * (finite_diff.mean() + noise) * u
+            if param.requires_grad:
+                u = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
+                param.data = param.data - self.lr * (finite_diff.mean() + noise) * u
 
 
     def step(self, inputs):
