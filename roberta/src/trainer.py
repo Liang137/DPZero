@@ -213,6 +213,7 @@ class Trainer(LinearHeadTrainer):
     def should_optim(self, name, param):
         return (not self.args.layer_wise_optim or f".{self.state.global_step % self.model.config.num_hidden_layers}." in name) and param.requires_grad
 
+
     def zo_forward(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
         model.eval()
         inputs = self._prepare_inputs(inputs)
@@ -229,6 +230,7 @@ class Trainer(LinearHeadTrainer):
         self.state.zo_forward_step += 1
         return loss.detach()
 
+
     def efficient_perturb_parameters(self, model: nn.Module, random_seed: int, scaling_factor=1):
         torch.manual_seed(random_seed)
         for name, param in self.named_parameters_to_optim:
@@ -236,24 +238,6 @@ class Trainer(LinearHeadTrainer):
             param.data = param.data + scaling_factor * z * self.args.zero_order_eps
         return model
 
-    def norm_perturb_parameters(self, model: nn.Module, random_vector=None, scaling_factor=1):
-        if random_vector is None:
-            random_vector = {}
-
-        for name, param in self.named_parameters_to_optim:
-            if name in random_vector:
-                z = random_vector[name]
-            else:
-                z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
-                random_vector[name] = z
-
-            cname = self.retrieve_c(name)
-            if cname in self.cs:
-                z = z / self.cs[cname]
-
-            param.data = param.data + scaling_factor * z * self.args.zero_order_eps
-
-        return model, random_vector
     
     def perturb_parameters(self, model: nn.Module, random_vector=None, scaling_factor=1):
         if random_vector is None:
@@ -269,110 +253,6 @@ class Trainer(LinearHeadTrainer):
 
         return model, random_vector
 
-    def perturb_single_layer(self, model, layer_name, random_vector=None, scaling_factor=1):
-        if random_vector is None:
-            random_vector = {}
-
-        for name, param in self.named_parameters_to_optim:
-            cname = self.retrieve_c(name)
-            if cname == layer_name:
-                if name in random_vector:
-                    z = random_vector[name]
-                else:
-                    z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
-                    random_vector[name] = z
-                param.data = param.data + scaling_factor * z * self.args.zero_order_eps
-
-        return model, random_vector
-
-    def initialize_c(self, model, inputs):
-        self.named_parameters_to_optim = []
-        for name, param in model.named_parameters():
-            if self.should_optim(name, param):
-                self.named_parameters_to_optim.append((name, param))
-
-        self.cs = {'embed': 0.0, 'lm_head': 0.0} 
-        # OPT: embed_tokens; embed_positions
-        # RoBERTa: embeddings
-        self.num_params = copy.deepcopy(self.cs)
-        self.num_model_layers = model.config.num_hidden_layers
-        layer_name = "layers" if model.config.model_type == "opt" else "layer"
-        for i in range(self.num_model_layers): 
-            self.cs[f'{layer_name}.{i}.'] = 0.0
-            self.num_params[f'{layer_name}.{i}.'] = 0
-        
-        # ZO estimation of c's
-        if self.args.zo_variant != 'param_norm' and self.args.use_zo_grad_est:
-            for layer in self.cs.keys():
-                with torch.no_grad():
-                    model, z = self.perturb_single_layer(model, layer_name=layer)
-                    loss1 = self.zo_forward(model, inputs)
-                    model, z = self.perturb_single_layer(model, layer_name=layer, random_vector=z, scaling_factor=-2)
-                    loss2 = self.zo_forward(model, inputs)
-
-                projected_grad = (loss1 - loss2) / (2 * self.args.zero_order_eps)
-                self.cs[layer] = torch.abs(projected_grad)
-
-                model, z = self.perturb_single_layer(model, layer_name=layer, random_vector=z)
-        
-        # no need to run backprop if we are using parameter norm variant, can just measure them
-        elif self.args.zo_variant == 'param_norm':
-            for name, param in self.named_parameters_to_optim:
-                print(name)
-                ckey = self.retrieve_c(name)
-                if ckey in self.cs:
-                    self.cs[ckey] += torch.sum(param.data ** 2)
-                    self.num_params[ckey] += param.data.numel()
-
-            # take sqrt to get norm
-            for ckey in self.cs:
-                self.cs[ckey] = torch.sqrt(self.cs[ckey])
-                if self.args.scale_norm_by_num_params:
-                    self.cs[ckey] /= torch.sqrt(self.cs[ckey])
-            
-            for ckey in self.cs:
-                if self.cs[ckey] != 0:
-                    self.cs[ckey] = self.cs[ckey].detach().item()
-        
-        #   backpropagation estimation fo ZO c's
-        #   this is mostly for debugging purposes to disentangle the variance from using ZO to estimate c
-        #   from the effectiveness of the preconditioners
-        else: 
-            model.eval()
-            inputs = self._prepare_inputs(inputs)
-            with self.compute_loss_context_manager():
-                loss = self.compute_loss(model, inputs)
-            if self.args.n_gpu > 1:
-                loss = loss.mean()  # mean() to average on multi-gpu parallel training
-            loss.backward()
-            for name, param in self.named_parameters_to_optim:
-                if param.grad is None:
-                    print(name)
-                else:
-                    ckey = self.retrieve_c(name)
-                    if ckey in self.cs:
-                        self.cs[ckey] += torch.sum(param.grad ** 2)
-                        self.num_params[ckey] += param.grad.numel()
-
-            # take sqrt to get norm
-            for ckey in self.cs:
-                self.cs[ckey] = torch.sqrt(self.cs[ckey])
-                if self.args.scale_norm_by_num_params:
-                    self.cs[ckey] /= torch.sqrt(self.num_params[ckey])
-
-            for ckey in self.cs:
-                if self.cs[ckey] != 0:
-                    self.cs[ckey] = self.cs[ckey].detach().item()
-
-        self.layer_names = list(self.cs.keys())
-        model.zero_grad()
-
-    def retrieve_c(self, param_name):
-        for c_name in self.cs.keys():
-            if c_name in param_name:
-                return c_name
-
-        return '' # these parameters are likely not being used in the forward pass
 
     def get_num_samples(self):
         if self.args.zero_order_sample_scheduler is None:
@@ -531,12 +411,6 @@ class Trainer(LinearHeadTrainer):
                 if self.args.sync_embedding_layers:
                     assert model.module.model_type == 'opt', 'did not implement embedding layer synchronization for non-OPT models'
                     model.module.model.decoder.embed_tokens.weight = model.module.lm_head.weight
-
-                # estimate c's (param or grad norm) on epoch 0
-                if epoch == 0 and step == 0 and self.args.zo_variant is not None:
-                    self.initialize_c(model, inputs)
-                elif step == 0 and self.args.zo_variant is not None and self.args.recompute_norms:
-                    self.initialize_c(model, inputs)
                 
                 # Skip past any already trained steps if resuming training
                 if steps_trained_in_current_epoch > 0:
@@ -550,119 +424,71 @@ class Trainer(LinearHeadTrainer):
                         if self.should_optim(name, param):
                             self.named_parameters_to_optim.append((name, param))
 
-                    if self.args.zo_by_layer:
-                        assert not self.args.efficient_zero_order, 'did not implement preconditioned ZO for efficient ZO yet'
-                        assert self.args.zero_order_use_trainer_optim, 'preconditioned ZO requires using the trainer optimizer'
-                        num_zs = self.get_num_samples()
-                        layers = [np.random.choice(self.layer_names)] if self.args.pc_rnd_layer else self.layer_names
+                    # get number of zs to sample
+                    num_zs = self.get_num_samples()
+                    if num_zs > 1:
+                        assert self.args.zero_order_use_trainer_optim, 'cannot sample multiple zs without storing intermediate gradient. use trainer.'
 
-                        # for each layer: perturb only that layer and store the gradient estimates in the grad buffer
-                        for layer in self.layer_names:
-                            for _ in range(num_zs):
-                                c_i = self.cs[layer]
-                                with torch.no_grad():
-                                    c_i = 1.0 if c_i == 0 else c_i # if the scaling is 0, just reset it to 1 so that there can eventually be some gradient to those layers 
-                                    model, random_vector = self.perturb_single_layer(model, layer, scaling_factor=1.0/c_i)
-                                    loss1 = self.zo_forward(model, inputs)
-                                    model, random_vector = self.perturb_single_layer(model, layer, random_vector=random_vector, scaling_factor=-2.0/c_i)
-                                    loss2 = self.zo_forward(model, inputs)
-                                    model, random_vector = self.perturb_single_layer(model, layer, random_vector=random_vector, scaling_factor=1.0/c_i)
+                    for _ in range(num_zs):
+                        # prepare for sampling new zs
+                        random_vector = None
+                        if self.args.efficient_zero_order:
+                            random_seed = np.random.randint(1000000000)
 
-                                projected_grad = (loss1 - loss2) / (2 * self.args.zero_order_eps)
-                                # scale grad according to number of zs sampled
-                                if not self.args.scale_lr_with_samples:
-                                    projected_grad = projected_grad / float(num_zs)
-                                
-                                for name, param in self.named_parameters_to_optim:
-                                    if self.retrieve_c(name) == layer:
-                                        z_tilde = random_vector[name] * c_i
-
-                                        if param.grad is None:
-                                            param.grad = projected_grad * z_tilde
-                                        else:
-                                            param.grad += projected_grad * z_tilde
-
-                                # note that  | E_z [ <z, grad of one layer > ] | is equal to norm of grad for that layer for gaussian z
-                                # leverages this fact to update the grad norms
-                                if self.args.zo_variant == 'grad_norm' and self.args.norm_running_update:
-                                    self.cs[layer] = torch.abs(projected_grad)
-                    else:
-                        # get number of zs to sample
-                        num_zs = self.get_num_samples()
-                        if num_zs > 1:
-                            assert self.args.zero_order_use_trainer_optim, 'cannot sample multiple zs without storing intermediate gradient. use trainer.'
-
-                        for _ in range(num_zs):
-                            # prepare for sampling new zs
-                            random_vector = None
-                            if self.args.efficient_zero_order:
-                                random_seed = np.random.randint(1000000000)
-
-                            with torch.no_grad():
-                                # first function evaluation
-                                if self.args.efficient_zero_order:
-                                    model = self.efficient_perturb_parameters(model, random_seed)
-                                elif self.args.zo_variant is not None:
-                                    model, random_vector = self.norm_perturb_parameters(model)
-                                else:
-                                    model, random_vector = self.perturb_parameters(model)
-                                loss1 = self.zo_forward(model, inputs)
-
-                                # second function evaluation
-                                if self.args.efficient_zero_order:
-                                    model = self.efficient_perturb_parameters(model, random_seed, scaling_factor=-2)
-                                elif self.args.zo_variant is not None:
-                                    model, random_vector = self.norm_perturb_parameters(model, random_vector, scaling_factor=-2)
-                                else:
-                                    model, random_vector = self.perturb_parameters(model, random_vector, scaling_factor=-2)                 
-                                loss2 = self.zo_forward(model, inputs)
-
-                            projected_grad = (loss1 - loss2) / (2 * self.args.zero_order_eps)
-
-                            # DPZero gradient clipping and noise injection
-                            if self.args.dpzero:
-                                projected_grad = dpzero_clip(projected_grad, self.args.dpzero_clip_threshold).mean()
-                                projected_grad += torch.randn(1).item() * self.dpzero_gaussian_std
-                                
-                            # scale grad according to accumulation
-                            if self.args.gradient_accumulation_steps > 1:
-                                assert self.args.zero_order_use_trainer_optim, 'grad accumulation not implemented for non-trainer ZO yet'
-                                projected_grad = projected_grad / self.args.gradient_accumulation_steps
-                            
-                            # scale grad according to number of zs sampled
-                            if not self.args.scale_lr_with_samples:
-                                projected_grad = projected_grad / float(num_zs)
-
-                            # store gradient in parameter buffer if using trainer
-                            # o/w, the loop will exit after one round and the update will be applied directly (see below)
-                            if self.args.zero_order_use_trainer_optim:
-                                if self.args.efficient_zero_order:
-                                    torch.manual_seed(random_seed)
-                                
-                                for name, param in self.named_parameters_to_optim:
-                                    # recover noise used in perturbations
-                                    if self.args.efficient_zero_order:
-                                        z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
-                                    else:
-                                        z = random_vector[name]
-
-                                    if self.args.zo_variant is not None and not self.args.change_grad_estimate:
-                                        cname = self.retrieve_c(name)
-                                        if cname in self.cs:
-                                            z = z * self.cs[cname]
-
-                                    if param.grad is None:
-                                        param.grad = projected_grad * z
-                                    else:
-                                        param.grad += projected_grad * z
-
-                            # reset model back to its parameters at start of step
+                        with torch.no_grad():
+                            # first function evaluation
                             if self.args.efficient_zero_order:
                                 model = self.efficient_perturb_parameters(model, random_seed)
-                            elif self.args.zo_variant is not None:
-                                model, random_vector = self.norm_perturb_parameters(model, random_vector)   
                             else:
-                                model, random_vector = self.perturb_parameters(model, random_vector)
+                                model, random_vector = self.perturb_parameters(model)
+                            loss1 = self.zo_forward(model, inputs)
+
+                            # second function evaluation
+                            if self.args.efficient_zero_order:
+                                model = self.efficient_perturb_parameters(model, random_seed, scaling_factor=-2)
+                            else:
+                                model, random_vector = self.perturb_parameters(model, random_vector, scaling_factor=-2)
+                            loss2 = self.zo_forward(model, inputs)
+
+                        projected_grad = (loss1 - loss2) / (2 * self.args.zero_order_eps)
+
+                        # DPZero gradient clipping and noise injection
+                        if self.args.dpzero:
+                            projected_grad = dpzero_clip(projected_grad, self.args.dpzero_clip_threshold).mean()
+                            projected_grad += torch.randn(1).item() * self.dpzero_gaussian_std
+
+                        # scale grad according to accumulation
+                        if self.args.gradient_accumulation_steps > 1:
+                            assert self.args.zero_order_use_trainer_optim, 'grad accumulation not implemented for non-trainer ZO yet'
+                            projected_grad = projected_grad / self.args.gradient_accumulation_steps
+
+                        # scale grad according to number of zs sampled
+                        if not self.args.scale_lr_with_samples:
+                            projected_grad = projected_grad / float(num_zs)
+
+                        # store gradient in parameter buffer if using trainer
+                        # o/w, the loop will exit after one round and the update will be applied directly (see below)
+                        if self.args.zero_order_use_trainer_optim:
+                            if self.args.efficient_zero_order:
+                                torch.manual_seed(random_seed)
+
+                            for name, param in self.named_parameters_to_optim:
+                                # recover noise used in perturbations
+                                if self.args.efficient_zero_order:
+                                    z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
+                                else:
+                                    z = random_vector[name]
+
+                                if param.grad is None:
+                                    param.grad = projected_grad * z
+                                else:
+                                    param.grad += projected_grad * z
+
+                        # reset model back to its parameters at start of step
+                        if self.args.efficient_zero_order:
+                            model = self.efficient_perturb_parameters(model, random_seed)
+                        else:
+                            model, random_vector = self.perturb_parameters(model, random_vector)
 
                     # apply gradient updates
                     # if using trainer, follow trainer logic to clip grad and check if parameters should be updated

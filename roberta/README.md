@@ -1,20 +1,9 @@
-## DPZero on RoBERTa-large
+## DPZero on RoBERTa
 
 The code is for reproducing the results of DPZero on RoBERTa-large. 
 Our implementation is based on [MeZO](https://github.com/princeton-nlp/MeZO).
 
-### Installation
-
-This code is tested on `Python 3.9.7`, with
-`torch==2.0.1`, `transformers==4.28.1`, and `opacus==1.4.0`.
-
-More on enviroments can be found in `enviroments.yml`. You can also create one using commands below.
-```bash
-conda env create -n dpzero -f enviroments.yml
-conda activate dpzero
-```
-
-### Prepare the data
+### Preparations
 
 The datasets can be found [here](https://nlp.cs.princeton.edu/projects/lm-bff/datasets.tar). 
 Please download it and extract the files to `./data/original`, or run the following commands:

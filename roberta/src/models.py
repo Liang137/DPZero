@@ -169,10 +169,7 @@ class RobertaModelForPromptFinetuning(RobertaPreTrainedModel):
         self.return_full_softmax = None
 
         # forward function for dpzero and mezo
-        if config.dpzero:
-            self.fwd = partial(model_for_prompting_forward_dpzero, dpzero=True)
-        else:
-            self.fwd = partial(model_for_prompting_forward_dpzero, dpzero=False)
+        self.fwd = partial(model_for_prompting_forward_dpzero, dpzero=config.dpzero)
 
     def tie_emb(self):
         output_embeddings = self.lm_head.decoder

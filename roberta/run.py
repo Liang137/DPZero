@@ -430,34 +430,10 @@ class DynamicTrainingArguments(TrainingArguments):
         metadata={"help": "Clip the norm of the gradient for zero order (only when using trainer optimizer)"}
     )
      
-    # MeZO variants
-    zo_by_layer: bool = field(
-        default=False,
-        metadata={"help": "For ZO: estimate the gradients on each layer individually, scales number of forward passes per grad step by a factor of L"}
-    )
+    # MeZO
     zo_variant: str = field(
         default=None,
         metadata={"help": "Choose the MeZO variant: grad_norm or param_norm (see documentation)"}
-    )
-    use_zo_grad_est: bool = field(
-        default=False,
-        metadata={"help": "Use zero-order estimate of the gradient for zo variants"}
-    )
-    recompute_norms: bool = field(
-        default=False,
-        metadata={'help': 'Recompute the grad or parameter norm (whichever was specified as --zo_variant) at the start of each epoch.'}
-    )
-    scale_norm_by_num_params: bool = field(
-        default=False,
-        metadata={'help': 'Scale grad or param norm by 1 / sqrt(num params)'}
-    )
-    norm_running_update: bool = field(
-        default=False,
-        metadata={"help": "When performing --zo_by_layer and using --zo_variant 'grad_norm', update the layer grad norms as they are recomputed at each step"}
-    )
-    change_grad_estimate: bool = field(
-        default=False,
-        metadata={"help": "Changes the expectation of the ZO gradient estimate according to zo_variant, instead of just modifying the variance"}
     )
     layer_wise_optim: bool = field(
         default=False,
