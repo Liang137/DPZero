@@ -18,10 +18,10 @@ conda activate dpzero
 
 ### Results
 * Test accuracy (%) on RoBERTa-large (355M).
-![avatar](./assets/dpzero-roberta.png)
+![avatar](./assets/roberta.png)
 
-* Test f1 score (%) on OPT.
-![avatar](./assets/dpzero-opt.png)
+* Test performance (%) on OPT.
+![avatar](./assets/opt.png)
 
 ### Reproducing our results
 
