@@ -8,7 +8,7 @@ Our implementation is based on [MeZO](https://github.com/princeton-nlp/MeZO).
 ### Installation
 
 This code is tested on `python 3.9.18`, with
-`torch==2.0.1`, `transformers==4.28.1`, and `opacus==1.4.0`.
+`torch==2.4.0+cu121`, `transformers==4.28.1`, and `opacus==1.4.0`.
 
 More on enviroments can be found in `environments.yml`. You can also create one using commands below.
 ```bash
